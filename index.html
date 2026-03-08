@@ -870,18 +870,18 @@ body::after {
     <!-- Step 2: API Key -->
     <div class="setup-step" id="step-2">
       <div class="step-label">Step 2 of 4</div>
-      <div class="step-title">Apni AI key daalo 🔑</div>
-      <div class="step-sub">SattvaOS ko kaam karne ke liye ek free Anthropic API key chahiye.</div>
+      <div class="step-title">Free Google AI key lo 🔑</div>
+      <div class="step-sub">Sirf Google account chahiye — bilkul free, koi credit card nahi!</div>
       <div class="api-note">
-        <strong>Kaise milegi free key?</strong><br>
-        1. <a href="https://console.anthropic.com" target="_blank">console.anthropic.com</a> pe jaao<br>
-        2. Account banao (free hai)<br>
-        3. "API Keys" → "Create Key" click karo<br>
-        4. Copy karke yahan paste karo
+        <strong>2 minute mein free key kaise milegi:</strong><br>
+        1. <a href="https://aistudio.google.com/apikey" target="_blank">aistudio.google.com/apikey</a> pe jaao<br>
+        2. Apne Google account se sign in karo<br>
+        3. <strong>"Create API Key"</strong> button dabao<br>
+        4. Key copy karke yahan paste karo ✅
       </div>
       <div class="field-wrap">
-        <div class="field-label">Anthropic API Key</div>
-        <input class="field-input" id="inp-key" placeholder="sk-ant-..." type="password" />
+        <div class="field-label">Google Gemini API Key</div>
+        <input class="field-input" id="inp-key" placeholder="AIza..." type="password" />
       </div>
       <div class="privacy-strip">
         <div class="icon">🔐</div>
@@ -1225,7 +1225,7 @@ async function callAPI(userMsg) {
     ? 'Sirf shuddh, saral Hindi mein jawab do. Koi English words mat use karo.'
     : 'Hinglish mein bolo — Hindi aur English ka natural casual mix, jaise close friend baat karta hai.';
 
-  const sys = `You are Sattva, a deeply empathetic AI health companion from SattvaOS. ${langInst}
+  const systemPrompt = `You are Sattva, a deeply empathetic AI health companion from SattvaOS. ${langInst}
 
 Core personality:
 - Genuinely warm and caring — like a wise, close friend
@@ -1246,23 +1246,41 @@ After 4+ exchanges with data: give a beautiful "Sattva Insight" summary
 
 User: ${S.name} | Mood: ${S.mood||'?'} | Sleep: ${S.sleep||'?'}hrs | Energy: ${S.energy||'?'}`;
 
-  const history = S.msgs.map(m=>({ role: m.r==='ai'?'assistant':'user', content: m.t }));
-  history.push({ role:'user', content: userMsg });
+  // Build Gemini conversation history
+  const contents = [];
+  
+  // Add system as first user message
+  contents.push({ role: 'user', parts: [{ text: systemPrompt + '\n\nUser ka pehla message aayega abhi.' }] });
+  contents.push({ role: 'model', parts: [{ text: 'Samajh gaya! Main Sattva hoon. Taiyaar hoon.' }] });
 
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method:'POST',
-    headers:{ 'Content-Type':'application/json', 'x-api-key': S.apiKey, 'anthropic-version':'2023-06-01' },
-    body: JSON.stringify({ model:'claude-sonnet-4-20250514', max_tokens:1000, system:sys, messages:history })
+  // Add conversation history
+  S.msgs.forEach(m => {
+    contents.push({
+      role: m.r === 'ai' ? 'model' : 'user',
+      parts: [{ text: m.t }]
+    });
   });
+
+  // Add current message
+  contents.push({ role: 'user', parts: [{ text: userMsg }] });
+
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${S.apiKey}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contents })
+    }
+  );
 
   if (!res.ok) {
     const err = await res.json();
-    if (err.error?.type === 'authentication_error') throw new Error('API_KEY_INVALID');
+    if (err.error?.code === 400 || err.error?.code === 403) throw new Error('API_KEY_INVALID');
     throw new Error('API_ERROR');
   }
 
   const d = await res.json();
-  return d.content?.[0]?.text || 'Yaar kuch dikkat aayi. Dobara try karo 🙏';
+  return d.candidates?.[0]?.content?.parts?.[0]?.text || 'Yaar kuch dikkat aayi. Dobara try karo 🙏';
 }
 
 async function getSmartReplies(lastAiMsg) {
@@ -1278,14 +1296,17 @@ ${langNote} Generate 3-4 short natural reply options (max 6 words) the user migh
 
 ONLY respond with JSON array: ["opt1","opt2","opt3","opt4"]`;
 
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method:'POST',
-      headers:{ 'Content-Type':'application/json', 'x-api-key': S.apiKey, 'anthropic-version':'2023-06-01' },
-      body: JSON.stringify({ model:'claude-sonnet-4-20250514', max_tokens:1000, messages:[{role:'user',content:prompt}] })
-    });
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${S.apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: prompt }] }] })
+      }
+    );
 
     const d = await res.json();
-    const raw = d.content?.[0]?.text || '[]';
+    const raw = d.candidates?.[0]?.content?.parts?.[0]?.text || '[]';
     const opts = JSON.parse(raw.replace(/```json|```/g,'').trim());
     if (Array.isArray(opts) && opts.length) setQR(opts);
   } catch(e) {}
@@ -1297,16 +1318,19 @@ async function generateInsight() {
   const conv = S.msgs.map(m=>m.t).join(' | ');
 
   try {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method:'POST',
-      headers:{ 'Content-Type':'application/json', 'x-api-key': S.apiKey, 'anthropic-version':'2023-06-01' },
-      body: JSON.stringify({
-        model:'claude-sonnet-4-20250514', max_tokens:1000,
-        messages:[{role:'user', content:`Health checkin for ${S.name}. Mood:${S.mood}, Sleep:${S.sleep}hrs, Energy:${S.energy}. Conversation: ${conv}. ${langNote} Write ONE beautiful poetic personal insight (2 sentences). Warm wise friend tone. Start with "Aaj..." or "Maine notice kiya..."`}]
-      })
-    });
+    const prompt = `Health checkin for ${S.name}. Mood:${S.mood}, Sleep:${S.sleep}hrs, Energy:${S.energy}. Conversation: ${conv}. ${langNote} Write ONE beautiful poetic personal insight (2 sentences). Warm wise friend tone. Start with "Aaj..." or "Maine notice kiya..."`;
+
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${S.apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: prompt }] }] })
+      }
+    );
+
     const d = await res.json();
-    const insight = d.content?.[0]?.text;
+    const insight = d.candidates?.[0]?.content?.parts?.[0]?.text;
     if (insight) {
       S.insight = insight;
       S.insightShown = true;
@@ -1461,17 +1485,19 @@ function renderWeekly() {
 async function generateWeeklySummary() {
   const recent = S.history.slice(0,7);
   const langNote = S.lang==='hindi' ? 'Sirf Hindi mein.' : 'Hinglish mein.';
+  const prompt = `Weekly health data for ${S.name}: ${recent.map(h=>`${h.date}: mood=${h.mood}, sleep=${h.sleep}hrs`).join(', ')}. ${langNote} Write warm 2-sentence weekly pattern insight. Be specific and encouraging.`;
+
   try {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method:'POST',
-      headers:{ 'Content-Type':'application/json', 'x-api-key': S.apiKey, 'anthropic-version':'2023-06-01' },
-      body: JSON.stringify({
-        model:'claude-sonnet-4-20250514', max_tokens:1000,
-        messages:[{role:'user', content:`Weekly health data for ${S.name}: ${recent.map(h=>`${h.date}: mood=${h.mood}, sleep=${h.sleep}hrs`).join(', ')}. ${langNote} Write warm 2-sentence weekly pattern insight. Be specific and encouraging.`}]
-      })
-    });
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${S.apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: prompt }] }] })
+      }
+    );
     const d = await res.json();
-    const sum = d.content?.[0]?.text;
+    const sum = d.candidates?.[0]?.content?.parts?.[0]?.text;
     if (sum) document.getElementById('weekly-insight').textContent = sum;
   } catch(e) {}
 }
